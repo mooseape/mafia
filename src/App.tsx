@@ -352,6 +352,16 @@ export default function App() {
         p_room_id: room.id,
       });
       if (error) throw error;
+      const { error: shuffleError } = await supabase.rpc("shuffle_room_roles", {
+        p_room_id: room.id,
+      });
+      if (shuffleError) {
+        throw new Error(
+          shuffleError.message.includes("shuffle_room_roles")
+            ? "Run supabase/shuffle_roles.sql in the Supabase SQL editor, then start again."
+            : shuffleError.message,
+        );
+      }
       await refreshRoom(room.id);
       if (myUserId) await loadMyRole(room.id, myUserId);
     } catch (e) {
