@@ -75,6 +75,20 @@ function randomCode() {
   return code;
 }
 
+function rpcMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) return error.message;
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof error.message === "string" &&
+    error.message
+  ) {
+    return error.message;
+  }
+  return fallback;
+}
+
 async function ensureSignedIn() {
   const { data } = await supabase.auth.getSession();
   if (data.session?.user) return data.session.user;
@@ -358,11 +372,11 @@ export default function App() {
     if (advancingDiscussRef.current) return;
     advancingDiscussRef.current = true;
     void (async () => {
-      const timed = await supabase.rpc("maybe_begin_day");
-      if (timed.error) {
-        await supabase.rpc("begin_day");
-      }
+      await supabase.rpc("begin_day");
       await refreshRoom(room.id);
+      window.setTimeout(() => {
+        advancingDiscussRef.current = false;
+      }, 2000);
     })();
   }, [nowMs, room?.id, room?.status, room?.discuss_ends_at]);
 
@@ -592,15 +606,12 @@ export default function App() {
     setError("");
     setBusy(true);
     try {
-      const hosted = await supabase.rpc("host_begin_day");
-      const { error } = hosted.error
-        ? await supabase.rpc("begin_day")
-        : hosted;
+      const { error } = await supabase.rpc("begin_day");
       if (error) throw error;
       setPicked(null);
       if (room) await refreshRoom(room.id);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not start vote");
+      setError(rpcMessage(e, "Could not start vote"));
     } finally {
       setBusy(false);
     }
@@ -617,7 +628,7 @@ export default function App() {
       setPicked(targetId);
       if (room) await refreshRoom(room.id);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Vote failed");
+      setError(rpcMessage(e, "Vote failed"));
     } finally {
       setBusy(false);
     }
