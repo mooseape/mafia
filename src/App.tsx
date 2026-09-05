@@ -257,6 +257,7 @@ export default function App() {
   const advancingDiscussRef = useRef(false);
   const localDiscussEndRef = useRef<number | null>(null);
   const nightStoryKeyRef = useRef<string | null>(null);
+  const discussClockKeyRef = useRef<string | null>(null);
   const prevForVoteRef = useRef<string | null>(null);
   const voteRevealKeyRef = useRef<string | null>(null);
   const [voteReveal, setVoteReveal] = useState<{
@@ -350,6 +351,7 @@ export default function App() {
     prevStatusRef.current = null;
     prevForVoteRef.current = null;
     voteRevealKeyRef.current = null;
+    discussClockKeyRef.current = null;
     setVoteReveal(null);
   }
   useEffect(() => {
@@ -440,6 +442,7 @@ export default function App() {
     prevStatusRef.current = null;
     prevForVoteRef.current = null;
     voteRevealKeyRef.current = null;
+    discussClockKeyRef.current = null;
     setVoteReveal(null);
   }, [room?.id]);
 
@@ -498,7 +501,31 @@ export default function App() {
     if (room?.discuss_seconds && room.discuss_seconds > 0) {
       setDiscussSeconds(room.discuss_seconds);
     }
-  }, [room?.id, room?.discuss_seconds]);
+  }, [room?.id]);
+
+  useEffect(() => {
+    if (!room || !me?.is_host) return;
+    if (room.status !== "dawn" && room.status !== "discuss") {
+      discussClockKeyRef.current = null;
+      return;
+    }
+    const key = `${room.id}:${room.status}`;
+    if (discussClockKeyRef.current === key) return;
+    discussClockKeyRef.current = key;
+    const secs = Math.min(30 * 60, Math.max(15, discussSeconds));
+    const endsAt = new Date(Date.now() + secs * 1000).toISOString();
+    localDiscussEndRef.current = Date.now() + secs * 1000;
+    void (async () => {
+      await supabase
+        .from("rooms")
+        .update({
+          discuss_seconds: secs,
+          discuss_ends_at: endsAt,
+        })
+        .eq("id", room.id);
+      await refreshRoom(room.id);
+    })();
+  }, [room?.id, room?.status, me?.is_host, discussSeconds]);
 
   useEffect(() => {
     if (!room || !me?.is_host) return;
@@ -577,7 +604,7 @@ export default function App() {
     } else if (localDiscussEndRef.current === null) {
       localDiscussEndRef.current =
         Date.now() +
-        (room.discuss_seconds ?? discussSeconds ?? DEFAULT_DISCUSS_SECONDS) *
+        (discussSeconds || room.discuss_seconds || DEFAULT_DISCUSS_SECONDS) *
           1000;
     }
     const tick = setInterval(() => setNowMs(Date.now()), 250);
@@ -725,6 +752,13 @@ export default function App() {
     setError("");
     setBusy(true);
     try {
+      const { error: timerError } = await supabase
+        .from("rooms")
+        .update({ discuss_seconds: discussSeconds })
+        .eq("id", room.id);
+      if (timerError && !isMissingRoomsColumn(timerError.message)) {
+        throw new Error(timerError.message);
+      }
       const { error: settingsError } = await supabase
         .from("rooms")
         .update({
@@ -736,12 +770,8 @@ export default function App() {
           include_jester: includeJester,
         })
         .eq("id", room.id);
-      if (settingsError) {
-        throw new Error(
-          isMissingRoomsColumn(settingsError.message)
-            ? LOBBY_SETTINGS_SQL_HINT
-            : settingsError.message,
-        );
+      if (settingsError && !isMissingRoomsColumn(settingsError.message)) {
+        throw new Error(settingsError.message);
       }
       const { error } = await supabase.rpc("start_game", {
         p_room_id: room.id,
