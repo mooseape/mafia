@@ -1,1 +1,132 @@
 @import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Special Elite", ui-serif, Georgia, serif;
+}
+
+html {
+  font-family: var(--font-sans);
+  background-color: #09090b;
+}
+
+body,
+#root {
+  min-height: 100%;
+  background-color: #09090b;
+}
+
+#root {
+  position: relative;
+}
+
+.night-sky {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+#root > *:not(.night-sky) {
+  position: relative;
+  z-index: 1;
+}
+
+h1 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: 0.04em;
+}
+
+button.press-btn {
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transform: translateY(0) scale(1);
+  box-shadow:
+    0 5px 0 #3f3f46,
+    inset 0 1px 0 rgb(255 255 255 / 0.14);
+  transition:
+    transform 140ms cubic-bezier(0.22, 1.4, 0.36, 1),
+    box-shadow 140ms ease,
+    filter 160ms ease,
+    background-color 160ms ease;
+}
+
+button.press-btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(
+    circle at center,
+    rgb(255 255 255 / 0.28),
+    transparent 62%
+  );
+  opacity: 0;
+  transform: scale(0.55);
+  pointer-events: none;
+  transition:
+    opacity 90ms ease,
+    transform 180ms cubic-bezier(0.22, 1.4, 0.36, 1);
+}
+
+button.press-btn:hover:not(:disabled) {
+  filter: brightness(1.12);
+  transform: translateY(-3px) scale(1.02);
+  box-shadow:
+    0 8px 0 #3f3f46,
+    inset 0 1px 0 rgb(255 255 255 / 0.18);
+}
+
+button.press-btn:active:not(:disabled) {
+  transform: translateY(4px) scale(0.97);
+  box-shadow:
+    0 0 0 #3f3f46,
+    inset 0 3px 8px rgb(0 0 0 / 0.35);
+  transition-duration: 70ms;
+}
+
+button.press-btn:active:not(:disabled)::after {
+  opacity: 1;
+  transform: scale(1.15);
+}
+
+button.press-btn:disabled {
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+  filter: none;
+}
+
+button.press-btn-danger {
+  box-shadow:
+    0 5px 0 #7f1d1d,
+    inset 0 1px 0 rgb(255 255 255 / 0.18);
+}
+
+button.press-btn-danger:hover:not(:disabled) {
+  box-shadow:
+    0 8px 0 #7f1d1d,
+    inset 0 1px 0 rgb(255 255 255 / 0.22);
+}
+
+button.press-btn-danger:active:not(:disabled) {
+  box-shadow:
+    0 0 0 #7f1d1d,
+    inset 0 3px 8px rgb(0 0 0 / 0.35);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button.press-btn,
+  button.press-btn::after {
+    transition: none;
+  }
+
+  button.press-btn:hover:not(:disabled),
+  button.press-btn:active:not(:disabled) {
+    transform: none;
+    filter: none;
+  }
+}
