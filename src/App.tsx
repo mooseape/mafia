@@ -107,6 +107,23 @@ function randomCode() {
   return code;
 }
 
+const RESERVED_PLAYER_NAMES = new Set([
+  "mafia",
+  "doctor",
+  "detective",
+  "jester",
+  "civilian",
+]);
+
+function playerNameError(raw: string): string | null {
+  const trimmed = raw.trim().replace(/\s+/g, " ");
+  if (!trimmed) return "Type a name first";
+  if (RESERVED_PLAYER_NAMES.has(trimmed.toLowerCase())) {
+    return "That name is a role. Pick a different one.";
+  }
+  return null;
+}
+
 function rpcMessage(error: unknown, fallback: string) {
   if (error instanceof Error && error.message) return error.message;
   if (
@@ -484,8 +501,9 @@ export default function App() {
 
   async function createRoom() {
     setError("");
-    if (!name.trim()) {
-      setError("Type a name first");
+    const nameProblem = playerNameError(name);
+    if (nameProblem) {
+      setError(nameProblem);
       return;
     }
     setBusy(true);
@@ -550,8 +568,9 @@ export default function App() {
 
   async function joinRoom() {
     setError("");
-    if (!name.trim()) {
-      setError("Type a name first");
+    const nameProblem = playerNameError(name);
+    if (nameProblem) {
+      setError(nameProblem);
       return;
     }
     if (joinCode.trim().length !== 6) {
