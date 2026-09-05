@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "./lib/supabase";
 
 type Player = {
@@ -79,6 +79,7 @@ export default function App() {
   >([]);
   const [picked, setPicked] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const prevStatusRef = useRef<string | null>(null);
 
   const me = players.find((p) => p.user_id === myUserId);
   const canStart =
@@ -111,15 +112,17 @@ export default function App() {
     if (data) setLiving(data as any);
   }
 
-  async function loadNote(roomId: string) {
-    if (!myUserId) return;
+  async function loadNote(roomId: string, userId: string) {
     const { data: row } = await supabase
       .from("players")
       .select("id")
       .eq("room_id", roomId)
-      .eq("user_id", myUserId)
+      .eq("user_id", userId)
       .single();
-    if (!row) return;
+    if (!row) {
+      setNote(null);
+      return;
+    }
     const { data } = await supabase
       .from("private_notes")
       .select("message")
@@ -128,7 +131,7 @@ export default function App() {
       .order("night_number", { ascending: false })
       .limit(1)
       .maybeSingle();
-    if (data?.message) setNote(data.message);
+    setNote(data?.message ?? null);
   }
 
   async function refreshRoom(roomId: string) {
@@ -139,6 +142,34 @@ export default function App() {
       .single();
     if (data) setRoom(data as Room);
   }
+  useEffect(() => {
+    async function restore() {
+      const { data } = await supabase.auth.getSession();
+      const user = data.session?.user;
+      if (!user) return;
+      setMyUserId(user.id);
+
+      const { data: row } = await supabase
+        .from("players")
+        .select("room_id")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!row) return;
+
+      const { data: existing } = await supabase
+        .from("rooms")
+        .select("*")
+        .eq("id", row.room_id)
+        .maybeSingle();
+
+      if (existing) setRoom(existing as Room);
+    }
+
+    restore();
+  }, []);
 
   useEffect(() => {
     if (!room) return;
@@ -147,7 +178,7 @@ export default function App() {
     loadLiving(room.id);
     if (myUserId) {
       loadMyRole(room.id, myUserId);
-      loadNote(room.id);
+      loadNote(room.id, myUserId);
     }
 
     const channel = supabase
@@ -165,7 +196,7 @@ export default function App() {
           loadLiving(room.id);
           if (myUserId) {
             loadMyRole(room.id, myUserId);
-            loadNote(room.id);
+            loadNote(room.id, myUserId);
           }
         },
       )
@@ -182,7 +213,7 @@ export default function App() {
           loadLiving(room.id);
           if (myUserId) {
             loadMyRole(room.id, myUserId);
-            loadNote(room.id);
+            loadNote(room.id, myUserId);
           }
         },
       )
@@ -194,20 +225,27 @@ export default function App() {
   }, [room?.id, myUserId]);
 
   useEffect(() => {
+    prevStatusRef.current = null;
+  }, [room?.id]);
+
+  useEffect(() => {
     if (!room || !myUserId) return;
     if (room.status === "lobby") return;
 
-    if (room.status === "night" || room.status === "reveal") {
+    const statusChanged = prevStatusRef.current !== room.status;
+    if (statusChanged && (room.status === "night" || room.status === "day")) {
       setPicked(null);
     }
+    prevStatusRef.current = room.status;
+
     loadMyRole(room.id, myUserId);
     loadLiving(room.id);
-    loadNote(room.id);
+    loadNote(room.id, myUserId);
 
     const t = setInterval(() => {
       loadMyRole(room.id, myUserId);
       loadLiving(room.id);
-      loadNote(room.id);
+      loadNote(room.id, myUserId);
       refreshRoom(room.id);
     }, 1000);
 
@@ -252,7 +290,7 @@ export default function App() {
       setError("Type a name first");
       return;
     }
-    if (joinCode.trim().length < 4) {
+    if (joinCode.trim().length !== 6) {
       setError("Enter the 6-letter room code");
       return;
     }
@@ -311,8 +349,8 @@ export default function App() {
       });
       if (error) throw error;
       setPicked(targetId);
-      if (room) {
-        await loadNote(room.id);
+      if (room && myUserId) {
+        await loadNote(room.id, myUserId);
         await refreshRoom(room.id);
       }
     } catch (e) {
@@ -354,6 +392,26 @@ export default function App() {
     }
   }
 
+  async function leaveGame() {
+    setError("");
+    setBusy(true);
+    try {
+      const { error } = await supabase.rpc("leave_game");
+      if (error) throw error;
+      setRoom(null);
+      setPlayers([]);
+      setLiving([]);
+      setMyRole(null);
+      setPicked(null);
+      setNote(null);
+      prevStatusRef.current = null;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not leave");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (room && room.status === "ended") {
     return (
       <main className="min-h-screen bg-zinc-950 text-zinc-50 flex items-center justify-center p-6">
@@ -361,6 +419,14 @@ export default function App() {
           <h1 className="text-4xl font-bold">Game over</h1>
           <p className="text-lg text-zinc-300">{room.announcement}</p>
           <p className="text-zinc-500">Winner: {room.winner ?? "unknown"}</p>
+          <button
+            type="button"
+            onClick={leaveGame}
+            disabled={busy}
+            className="w-full rounded-xl bg-zinc-800 py-3 text-sm"
+          >
+            Leave game
+          </button>
         </div>
       </main>
     );
@@ -383,6 +449,14 @@ export default function App() {
             className="w-full rounded-xl bg-red-700 py-4 text-lg font-semibold"
           >
             Go to vote
+          </button>
+          <button
+            type="button"
+            onClick={leaveGame}
+            disabled={busy}
+            className="w-full rounded-xl bg-zinc-800 py-3 text-sm"
+          >
+            Leave game
           </button>
         </div>
       </main>
@@ -420,15 +494,45 @@ export default function App() {
             </p>
           )}
           {error && <p className="text-red-400 text-sm">{error}</p>}
+          <button
+            type="button"
+            onClick={leaveGame}
+            disabled={busy}
+            className="w-full rounded-xl bg-zinc-800 py-3 text-sm"
+          >
+            Leave game
+          </button>
         </div>
       </main>
     );
   }
 
-  if (room && (room.status === "night" || room.status === "reveal") && myRole) {
+  if (room && (room.status === "night" || room.status === "reveal")) {
+    if (!myRole) {
+      return (
+        <main className="min-h-screen bg-zinc-950 text-zinc-50 flex items-center justify-center p-6">
+          <div className="w-full max-w-sm text-center space-y-4">
+            <h1 className="text-3xl font-bold">Dealing roles…</h1>
+            <p className="text-zinc-500">Hang on — your role is on the way.</p>
+            {error && <p className="text-red-400 text-sm">{error}</p>}
+            <button
+              type="button"
+              onClick={leaveGame}
+              disabled={busy}
+              className="w-full rounded-xl bg-zinc-800 py-3 text-sm"
+            >
+              Leave game
+            </button>
+          </div>
+        </main>
+      );
+    }
+
     const info = ROLE_TEXT[myRole] ?? { title: myRole, blurb: "" };
+    const amAlive = living.some((p) => p.user_id === myUserId && p.is_alive);
     const canAct =
-      myRole === "mafia" || myRole === "doctor" || myRole === "detective";
+      amAlive &&
+      (myRole === "mafia" || myRole === "doctor" || myRole === "detective");
     const targets = living.filter((p) => {
       if (!p.is_alive) return false;
       if (
@@ -457,6 +561,10 @@ export default function App() {
             </p>
           )}
 
+          {!amAlive && (
+            <p className="text-center text-zinc-500">You are dead. Watch.</p>
+          )}
+
           {canAct && !picked && (
             <div className="space-y-2">
               <p className="text-sm text-zinc-400">
@@ -479,13 +587,21 @@ export default function App() {
             </div>
           )}
 
-          {(!canAct || picked) && (
+          {amAlive && (!canAct || picked) && (
             <p className="text-center text-zinc-500">
               Waiting for the night to end…
             </p>
           )}
 
           {error && <p className="text-red-400 text-sm">{error}</p>}
+          <button
+            type="button"
+            onClick={leaveGame}
+            disabled={busy}
+            className="w-full rounded-xl bg-zinc-800 py-3 text-sm"
+          >
+            Leave game
+          </button>
         </div>
       </main>
     );
@@ -532,6 +648,24 @@ export default function App() {
                 ? "Waiting for host"
                 : "Dealing roles…"}
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (!room) return;
+              void navigator.clipboard.writeText(room.code);
+            }}
+            className="w-full rounded-xl bg-zinc-900 py-3 text-sm"
+          >
+            Copy room code
+          </button>
+          <button
+            type="button"
+            onClick={leaveGame}
+            disabled={busy}
+            className="w-full rounded-xl bg-zinc-800 py-3 text-sm"
+          >
+            Leave game
+          </button>
         </div>
       </main>
     );
@@ -560,6 +694,7 @@ export default function App() {
             value={joinCode}
             onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
             placeholder="CODE"
+            maxLength={6}
             className="flex-1 rounded-xl bg-zinc-900 px-4 py-3 outline-none tracking-widest"
           />
           <button
