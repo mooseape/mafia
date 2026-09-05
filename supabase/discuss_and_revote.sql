@@ -16,9 +16,12 @@ returns trigger
 language plpgsql
 as $fn_rooms$
 begin
-  if new.status = 'dawn' and (old.status is distinct from 'dawn') then
+  if new.status in ('dawn', 'discuss')
+     and (old.status is distinct from new.status) then
     new.discuss_ends_at :=
-      now() + make_interval(secs => coalesce(new.discuss_seconds, 150));
+      now() + make_interval(
+        secs => greatest(15, coalesce(new.discuss_seconds, 150))
+      );
   end if;
   return new;
 end;
