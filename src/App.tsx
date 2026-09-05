@@ -59,6 +59,38 @@ const ROLE_TEXT: Record<string, { title: string; blurb: string }> = {
   },
 };
 
+const NIGHT_KILL_STORIES = [
+  "{name} was found at first light, still in the street. Nobody heard a thing.",
+  "They knocked on {name}'s door at dawn. The kettle was cold.",
+  "{name} never came back from the well. The bucket was still there.",
+  "A coat hung on the fence. Under it, {name} did not wake.",
+  "{name} missed the morning bell. The house was unlocked.",
+  "Tracks stopped in the square. That is where they found {name}.",
+  "{name}'s candle burned down to the dish. The chair was empty.",
+  "Someone closed {name}'s eyes before the town could gather.",
+  "The river path held {name} until sunrise. No one else was in sight.",
+  "{name} had set two cups out. Only one was used.",
+];
+
+const NIGHT_SAVE_STORIES = [
+  "{name} was left for dead. At dawn they were bandaged and breathing.",
+  "The town almost lost {name}. They opened their eyes before anyone could explain it.",
+  "{name} was attacked in the dark. Whoever stayed behind left no name.",
+  "Blood on the stoop. {name} is alive. That is the whole report.",
+  "{name} collapsed after midnight and sat up at first light.",
+  "They came for {name}. Dawn found them shaken, not gone.",
+  "{name} remembers a struggle, then waking under a blanket that was not theirs.",
+  "A window broke at {name}'s house. They still answered the morning roll.",
+  "{name} should have been a body in the lane. They walked home instead.",
+  "The night reached for {name} and missed. They will not say more.",
+];
+
+function nightStory(templates: string[], name: string) {
+  const story =
+    templates[Math.floor(Math.random() * templates.length)] ?? templates[0];
+  return story.replaceAll("{name}", name);
+}
+
 function formatClock(totalSeconds: number) {
   const s = Math.max(0, Math.floor(totalSeconds));
   const m = Math.floor(s / 60);
@@ -121,6 +153,7 @@ export default function App() {
   const joinedRoomIdRef = useRef<string | null>(null);
   const advancingDiscussRef = useRef(false);
   const localDiscussEndRef = useRef<number | null>(null);
+  const nightStoryKeyRef = useRef<string | null>(null);
   const [discussSeconds, setDiscussSeconds] = useState(DEFAULT_DISCUSS_SECONDS);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [mafiaCanKill, setMafiaCanKill] = useState(true);
@@ -324,6 +357,68 @@ export default function App() {
       setDiscussSeconds(room.discuss_seconds);
     }
   }, [room?.id, room?.discuss_seconds]);
+
+  useEffect(() => {
+    if (!room || !me?.is_host) return;
+    if (room.status !== "dawn" && room.status !== "discuss") {
+      nightStoryKeyRef.current = null;
+      return;
+    }
+    const key = `${room.id}:${room.discuss_ends_at ?? "dawn"}`;
+    if (nightStoryKeyRef.current === key) return;
+    void (async () => {
+      const { data, error } = await supabase.rpc("apply_night_story", {
+        p_room_id: room.id,
+      });
+      if (!error && typeof data === "string" && data) {
+        nightStoryKeyRef.current = key;
+        setRoom((prev) =>
+          prev && prev.id === room.id ? { ...prev, announcement: data } : prev,
+        );
+        return;
+      }
+      if (living.length === 0) return;
+      nightStoryKeyRef.current = key;
+      const { data: actions } = await supabase
+        .from("night_actions")
+        .select("player_id, target_id")
+        .eq("room_id", room.id);
+      const mafiaIds = new Set(
+        living.filter((p) => p.role === "mafia").map((p) => p.id),
+      );
+      const doctorIds = new Set(
+        living.filter((p) => p.role === "doctor").map((p) => p.id),
+      );
+      const mafiaTarget = [...(actions ?? [])]
+        .reverse()
+        .find((a) => mafiaIds.has(a.player_id))?.target_id;
+      const doctorTarget = [...(actions ?? [])]
+        .reverse()
+        .find((a) => doctorIds.has(a.player_id))?.target_id;
+      const victim = living.find(
+        (p) => p.id === mafiaTarget || p.user_id === mafiaTarget,
+      );
+      let story = "The streets were empty till dawn. Nobody is missing.";
+      if (victim && victim.is_alive === false) {
+        story = nightStory(NIGHT_KILL_STORIES, victim.name);
+      } else if (victim && doctorTarget === mafiaTarget) {
+        story = nightStory(NIGHT_SAVE_STORIES, victim.name);
+      }
+      await supabase
+        .from("rooms")
+        .update({ announcement: story })
+        .eq("id", room.id);
+      setRoom((prev) =>
+        prev && prev.id === room.id ? { ...prev, announcement: story } : prev,
+      );
+    })();
+  }, [
+    room?.id,
+    room?.status,
+    room?.discuss_ends_at,
+    me?.is_host,
+    living,
+  ]);
 
   useEffect(() => {
     if (!room) return;
