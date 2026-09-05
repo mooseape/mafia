@@ -80,7 +80,10 @@ set search_path = public
 as $fn_vote$
 declare
   me public.players%rowtype;
+  room_col text;
   voter_col text;
+  target_col text;
+  voter_val uuid;
   living_n int;
   voted_n int;
   top_id uuid;
@@ -90,12 +93,12 @@ declare
   mafia_alive int;
   others_alive int;
   victim_name text;
+  cols text;
 begin
   select * into me
   from public.players
   where user_id = auth.uid()
     and room_id in (select id from public.rooms where status = 'day')
-  order by created_at desc
   limit 1;
 
   if me.id is null then
@@ -105,24 +108,70 @@ begin
     raise exception 'Dead players cannot vote';
   end if;
 
+  select string_agg(c.column_name, ', ' order by c.ordinal_position)
+  into cols
+  from information_schema.columns c
+  where c.table_schema = 'public'
+    and c.table_name = 'votes';
+
+  select c.column_name into room_col
+  from information_schema.columns c
+  where c.table_schema = 'public'
+    and c.table_name = 'votes'
+    and c.column_name in ('room_id', 'game_id')
+  order by case c.column_name when 'room_id' then 0 else 1 end
+  limit 1;
+
   select c.column_name into voter_col
   from information_schema.columns c
   where c.table_schema = 'public'
     and c.table_name = 'votes'
-    and c.column_name in ('voter_id', 'player_id')
-  order by case c.column_name when 'voter_id' then 0 else 1 end
+    and c.column_name in (
+      'voter_id', 'player_id', 'user_id', 'from_id', 'voter', 'voted_by'
+    )
+  order by case c.column_name
+    when 'voter_id' then 0
+    when 'player_id' then 1
+    when 'user_id' then 2
+    when 'from_id' then 3
+    when 'voted_by' then 4
+    else 5
+  end
   limit 1;
 
-  if voter_col is null then
-    raise exception 'votes table needs voter_id or player_id';
+  select c.column_name into target_col
+  from information_schema.columns c
+  where c.table_schema = 'public'
+    and c.table_name = 'votes'
+    and c.column_name in (
+      'target_id', 'voted_for', 'votee_id', 'against_id',
+      'nominee_id', 'candidate_id', 'to_id'
+    )
+  order by case c.column_name
+    when 'target_id' then 0
+    when 'voted_for' then 1
+    else 2
+  end
+  limit 1;
+
+  if room_col is null or voter_col is null or target_col is null then
+    raise exception 'votes table columns are %', coalesce(cols, '(none)');
   end if;
 
-  execute format('delete from public.votes where room_id = $1 and %I = $2', voter_col)
-    using me.room_id, me.id;
+  if voter_col in ('user_id', 'voted_by') then
+    voter_val := me.user_id;
+  else
+    voter_val := me.id;
+  end if;
+
   execute format(
-    'insert into public.votes (room_id, %I, target_id) values ($1, $2, $3)',
-    voter_col
-  ) using me.room_id, me.id, p_target_id;
+    'delete from public.votes where %I = $1 and %I = $2',
+    room_col, voter_col
+  ) using me.room_id, voter_val;
+  execute format(
+    'insert into public.votes (%I, %I, %I) values ($1, $2, $3)',
+    room_col, voter_col, target_col
+  ) using me.room_id, voter_val, p_target_id;
 
   update public.rooms
   set announcement = 'Votes are in…'
@@ -134,43 +183,44 @@ begin
   where room_id = me.room_id and coalesce(is_alive, true);
 
   execute format(
-    'select count(distinct %I) from public.votes where room_id = $1',
-    voter_col
+    'select count(distinct %I) from public.votes where %I = $1',
+    voter_col, room_col
   ) into voted_n using me.room_id;
 
   if voted_n < living_n then
     return;
   end if;
 
-  execute
+  execute format(
     'with counts as (
-       select target_id, count(*)::int as c
+       select %I as tid, count(*)::int as c
        from public.votes
-       where room_id = $1
-       group by target_id
+       where %I = $1
+       group by 1
      )
-     select target_id, c
+     select tid, c
      from counts
      order by c desc
-     limit 1'
-    into top_id, top_n
-    using me.room_id;
+     limit 1',
+    target_col, room_col
+  ) into top_id, top_n using me.room_id;
 
-  execute
+  execute format(
     'with counts as (
        select count(*)::int as c
        from public.votes
-       where room_id = $1
-       group by target_id
+       where %I = $1
+       group by %I
      )
      select count(*) > 1
      from counts
-     where c = $2'
-    into tied
-    using me.room_id, top_n;
+     where c = $2',
+    room_col, target_col
+  ) into tied using me.room_id, top_n;
 
   if tied or top_id is null then
-    execute 'delete from public.votes where room_id = $1' using me.room_id;
+    execute format('delete from public.votes where %I = $1', room_col)
+      using me.room_id;
     update public.rooms
     set announcement = 'The vote is tied. Vote again.'
     where id = me.room_id;
@@ -179,12 +229,14 @@ begin
 
   update public.players
   set is_alive = false
-  where id = top_id
+  where room_id = me.room_id
+    and (id = top_id or user_id = top_id)
   returning * into victim;
 
   victim_name := coalesce(victim.name, 'Someone');
 
-  execute 'delete from public.votes where room_id = $1' using me.room_id;
+  execute format('delete from public.votes where %I = $1', room_col)
+    using me.room_id;
 
   if victim.role = 'jester' then
     update public.rooms
