@@ -106,6 +106,8 @@ export default function NightSky() {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    const view: HTMLCanvasElement = canvas;
+    const graphics: CanvasRenderingContext2D = ctx;
 
     const reduceMotion = window.matchMedia(
       "(prefers-reduced-motion: reduce)",
@@ -120,11 +122,11 @@ export default function NightSky() {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const w = window.innerWidth;
       const h = window.innerHeight;
-      canvas.width = Math.floor(w * dpr);
-      canvas.height = Math.floor(h * dpr);
-      canvas.style.width = `${w}px`;
-      canvas.style.height = `${h}px`;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      view.width = Math.floor(w * dpr);
+      view.height = Math.floor(h * dpr);
+      view.style.width = `${w}px`;
+      view.style.height = `${h}px`;
+      graphics.setTransform(dpr, 0, 0, dpr, 0, 0);
       const count = Math.min(190, Math.max(110, Math.floor((w * h) / 8000)));
       dots = makeDots(count);
       const now = performance.now();
@@ -135,7 +137,7 @@ export default function NightSky() {
     function draw(now: number) {
       const w = window.innerWidth;
       const h = window.innerHeight;
-      ctx.clearRect(0, 0, w, h);
+      graphics.clearRect(0, 0, w, h);
 
       const taken = new Set<number>();
       for (const flare of flares) {
@@ -163,7 +165,7 @@ export default function NightSky() {
         }
 
         const alpha = Math.min(1, dot.base * twinkle + glow * 0.7);
-        drawStar(ctx, dot.x * w, dot.y * h, dot.r, dot.color, alpha, glow);
+        drawStar(graphics, dot.x * w, dot.y * h, dot.r, dot.color, alpha, glow);
       }
     }
 
