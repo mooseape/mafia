@@ -18,6 +18,11 @@ type Room = {
   winner?: string | null;
   discuss_seconds?: number | null;
   discuss_ends_at?: string | null;
+  mafia_can_kill?: boolean | null;
+  include_mafia?: boolean | null;
+  include_doctor?: boolean | null;
+  include_detective?: boolean | null;
+  include_jester?: boolean | null;
 };
 
 const DEFAULT_DISCUSS_SECONDS = 150;
@@ -96,10 +101,18 @@ export default function App() {
   const localDiscussEndRef = useRef<number | null>(null);
   const [discussSeconds, setDiscussSeconds] = useState(DEFAULT_DISCUSS_SECONDS);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [mafiaCanKill, setMafiaCanKill] = useState(true);
+  const [includeMafia, setIncludeMafia] = useState(true);
+  const [includeDoctor, setIncludeDoctor] = useState(true);
+  const [includeDetective, setIncludeDetective] = useState(true);
+  const [includeJester, setIncludeJester] = useState(true);
 
   const me = players.find((p) => p.user_id === myUserId);
   const canStart =
-    Boolean(me?.is_host) && players.length >= 4 && room?.status === "lobby";
+    Boolean(me?.is_host) &&
+    players.length >= 4 &&
+    room?.status === "lobby" &&
+    includeMafia;
 
   async function loadPlayers(roomId: string) {
     const { data, error } = await supabase
@@ -292,7 +305,22 @@ export default function App() {
     if (room?.discuss_seconds && room.discuss_seconds > 0) {
       setDiscussSeconds(room.discuss_seconds);
     }
-  }, [room?.id, room?.discuss_seconds]);
+    if (room) {
+      setMafiaCanKill(room.mafia_can_kill !== false);
+      setIncludeMafia(room.include_mafia !== false);
+      setIncludeDoctor(room.include_doctor !== false);
+      setIncludeDetective(room.include_detective !== false);
+      setIncludeJester(room.include_jester !== false);
+    }
+  }, [
+    room?.id,
+    room?.discuss_seconds,
+    room?.mafia_can_kill,
+    room?.include_mafia,
+    room?.include_doctor,
+    room?.include_detective,
+    room?.include_jester,
+  ]);
 
   useEffect(() => {
     if (room?.status === "day" && /tied|vote again/i.test(room.announcement ?? "")) {
@@ -341,6 +369,13 @@ export default function App() {
     })();
   }, [nowMs, room?.id, room?.status, room?.discuss_ends_at]);
 
+  useEffect(() => {
+    if (!room) return;
+    if (room.status !== "night" && room.status !== "reveal") return;
+    if (room.mafia_can_kill !== false) return;
+    void supabase.rpc("skip_disarmed_mafia", { p_room_id: room.id });
+  }, [room?.id, room?.status, room?.mafia_can_kill]);
+
   async function createRoom() {
     setError("");
     if (!name.trim()) {
@@ -357,6 +392,11 @@ export default function App() {
         host_id: user.id,
         status: "lobby",
         discuss_seconds: DEFAULT_DISCUSS_SECONDS,
+        mafia_can_kill: true,
+        include_mafia: true,
+        include_doctor: true,
+        include_detective: true,
+        include_jester: true,
       };
       let { data: newRoom, error: roomError } = await supabase
         .from("rooms")
@@ -433,12 +473,29 @@ export default function App() {
     try {
       await supabase
         .from("rooms")
-        .update({ discuss_seconds: discussSeconds })
+        .update({
+          discuss_seconds: discussSeconds,
+          mafia_can_kill: mafiaCanKill,
+          include_mafia: includeMafia,
+          include_doctor: includeDoctor,
+          include_detective: includeDetective,
+          include_jester: includeJester,
+        })
         .eq("id", room.id);
       const { error } = await supabase.rpc("start_game", {
         p_room_id: room.id,
       });
       if (error) throw error;
+      const { error: dealError } = await supabase.rpc("deal_configured_roles", {
+        p_room_id: room.id,
+      });
+      if (dealError) {
+        throw new Error(
+          dealError.message.includes("deal_configured_roles")
+            ? "Run supabase/lobby_settings.sql in the Supabase SQL editor, then start again."
+            : dealError.message,
+        );
+      }
       const { error: shuffleError } = await supabase.rpc("shuffle_room_roles", {
         p_room_id: room.id,
       });
@@ -476,6 +533,26 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function saveLobbySettings(
+    patch: Partial<{
+      mafia_can_kill: boolean;
+      include_mafia: boolean;
+      include_doctor: boolean;
+      include_detective: boolean;
+      include_jester: boolean;
+    }>,
+  ) {
+    if (patch.mafia_can_kill !== undefined) setMafiaCanKill(patch.mafia_can_kill);
+    if (patch.include_mafia !== undefined) setIncludeMafia(patch.include_mafia);
+    if (patch.include_doctor !== undefined) setIncludeDoctor(patch.include_doctor);
+    if (patch.include_detective !== undefined)
+      setIncludeDetective(patch.include_detective);
+    if (patch.include_jester !== undefined) setIncludeJester(patch.include_jester);
+    if (!room || !me?.is_host || room.status !== "lobby") return;
+    const { error } = await supabase.from("rooms").update(patch).eq("id", room.id);
+    if (error) setError(error.message);
   }
 
   async function saveDiscussSeconds(next: number) {
@@ -671,11 +748,19 @@ export default function App() {
       );
     }
 
-    const info = ROLE_TEXT[myRole] ?? { title: myRole, blurb: "" };
+    const info =
+      myRole === "mafia" && room.mafia_can_kill === false
+        ? {
+            title: "Mafia",
+            blurb: "You cannot kill tonight. Blend in and survive the vote.",
+          }
+        : (ROLE_TEXT[myRole] ?? { title: myRole, blurb: "" });
     const amAlive = living.some((p) => p.user_id === myUserId && p.is_alive);
     const canAct =
       amAlive &&
-      (myRole === "mafia" || myRole === "doctor" || myRole === "detective");
+      ((myRole === "mafia" && room.mafia_can_kill !== false) ||
+        myRole === "doctor" ||
+        myRole === "detective");
     const targets = living.filter((p) => {
       if (!p.is_alive) return false;
       if (
@@ -818,11 +903,71 @@ export default function App() {
               </p>
             </div>
           )}
+          {me?.is_host && room.status === "lobby" && (
+            <div className="rounded-xl bg-zinc-900 px-4 py-3 space-y-3">
+              <p className="text-sm text-zinc-400">Roles in this game</p>
+              {(
+                [
+                  ["includeMafia", "Mafia", includeMafia, (v: boolean) => saveLobbySettings({ include_mafia: v })],
+                  ["includeDoctor", "Doctor", includeDoctor, (v: boolean) => saveLobbySettings({ include_doctor: v })],
+                  ["includeDetective", "Detective", includeDetective, (v: boolean) => saveLobbySettings({ include_detective: v })],
+                  ["includeJester", "Jester", includeJester, (v: boolean) => saveLobbySettings({ include_jester: v })],
+                ] as const
+              ).map(([key, label, on, set]) => (
+                <label key={key} className="flex items-center justify-between text-sm">
+                  <span>{label}</span>
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    onChange={(e) => void set(e.target.checked)}
+                    className="h-4 w-4 accent-red-600"
+                  />
+                </label>
+              ))}
+              <label className="flex items-center justify-between text-sm pt-1 border-t border-zinc-800">
+                <span className={includeMafia ? "" : "text-zinc-600"}>
+                  Mafia can kill at night
+                </span>
+                <input
+                  type="checkbox"
+                  checked={mafiaCanKill}
+                  disabled={!includeMafia}
+                  onChange={(e) =>
+                    void saveLobbySettings({ mafia_can_kill: e.target.checked })
+                  }
+                  className="h-4 w-4 accent-red-600"
+                />
+              </label>
+              {!includeMafia && (
+                <p className="text-amber-400/90 text-xs">
+                  Turn Mafia on to start. Town needs someone to hunt.
+                </p>
+              )}
+            </div>
+          )}
           {!me?.is_host && room.status === "lobby" && (
-            <p className="text-center text-zinc-500 text-sm">
-              Discussion after night:{" "}
-              {formatClock(room.discuss_seconds ?? discussSeconds)}
-            </p>
+            <div className="text-center text-zinc-500 text-sm space-y-1">
+              <p>
+                Discussion after night:{" "}
+                {formatClock(room.discuss_seconds ?? discussSeconds)}
+              </p>
+              <p>
+                Roles:{" "}
+                {[
+                  room.include_mafia !== false && "Mafia",
+                  room.include_doctor !== false && "Doctor",
+                  room.include_detective !== false && "Detective",
+                  room.include_jester !== false && "Jester",
+                  "Civilian",
+                ]
+                  .filter(Boolean)
+                  .join(", ")}
+              </p>
+              <p>
+                Mafia night kill:{" "}
+                {room.mafia_can_kill === false ? "off" : "on"}
+              </p>
+            </div>
           )}
           <button
             type="button"
