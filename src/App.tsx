@@ -414,16 +414,16 @@ export default function App() {
 
   if (room && room.status === "ended") {
     return (
-      <main className="min-h-screen bg-zinc-950 text-zinc-50 flex items-center justify-center p-6">
+      <main className="min-h-screen text-zinc-50 flex items-center justify-center p-6">
         <div className="w-full max-w-sm text-center space-y-4">
-          <h1 className="text-4xl font-bold">Game over</h1>
+          <h1 className="text-4xl">Game over</h1>
           <p className="text-lg text-zinc-300">{room.announcement}</p>
           <p className="text-zinc-500">Winner: {room.winner ?? "unknown"}</p>
           <button
             type="button"
             onClick={leaveGame}
             disabled={busy}
-            className="w-full rounded-xl bg-zinc-800 py-3 text-sm"
+            className="press-btn w-full rounded-xl bg-zinc-800 py-3 text-sm"
           >
             Leave game
           </button>
@@ -434,9 +434,9 @@ export default function App() {
 
   if (room && room.status === "dawn") {
     return (
-      <main className="min-h-screen bg-zinc-950 text-zinc-50 flex items-center justify-center p-6">
+      <main className="min-h-screen text-zinc-50 flex items-center justify-center p-6">
         <div className="w-full max-w-sm text-center space-y-4">
-          <h1 className="text-3xl font-bold">Morning</h1>
+          <h1 className="text-3xl">Morning</h1>
           <p className="text-lg text-zinc-300">
             {room.announcement ?? "The night is over."}
           </p>
@@ -446,7 +446,7 @@ export default function App() {
             type="button"
             onClick={goToVote}
             disabled={busy}
-            className="w-full rounded-xl bg-red-700 py-4 text-lg font-semibold"
+            className="press-btn press-btn-danger w-full rounded-xl bg-red-700 py-4 text-lg font-semibold"
           >
             Go to vote
           </button>
@@ -454,7 +454,7 @@ export default function App() {
             type="button"
             onClick={leaveGame}
             disabled={busy}
-            className="w-full rounded-xl bg-zinc-800 py-3 text-sm"
+            className="press-btn w-full rounded-xl bg-zinc-800 py-3 text-sm"
           >
             Leave game
           </button>
@@ -468,9 +468,9 @@ export default function App() {
     const amAlive = living.some((p) => p.user_id === myUserId && p.is_alive);
 
     return (
-      <main className="min-h-screen bg-zinc-950 text-zinc-50 p-6">
+      <main className="min-h-screen text-zinc-50 p-6">
         <div className="mx-auto w-full max-w-sm space-y-4">
-          <h1 className="text-center text-3xl font-bold">Day vote</h1>
+          <h1 className="text-center text-3xl">Day vote</h1>
           <p className="text-center text-zinc-400">{room.announcement}</p>
           {!amAlive && (
             <p className="text-center text-zinc-500">You are dead. Watch.</p>
@@ -483,7 +483,7 @@ export default function App() {
                 type="button"
                 disabled={busy}
                 onClick={() => submitVote(p.id)}
-                className="w-full rounded-xl bg-zinc-900 py-3"
+                className="press-btn w-full rounded-xl bg-zinc-900 py-3"
               >
                 {p.name}
               </button>
@@ -498,7 +498,7 @@ export default function App() {
             type="button"
             onClick={leaveGame}
             disabled={busy}
-            className="w-full rounded-xl bg-zinc-800 py-3 text-sm"
+            className="press-btn w-full rounded-xl bg-zinc-800 py-3 text-sm"
           >
             Leave game
           </button>
@@ -510,16 +510,16 @@ export default function App() {
   if (room && (room.status === "night" || room.status === "reveal")) {
     if (!myRole) {
       return (
-        <main className="min-h-screen bg-zinc-950 text-zinc-50 flex items-center justify-center p-6">
+        <main className="min-h-screen text-zinc-50 flex items-center justify-center p-6">
           <div className="w-full max-w-sm text-center space-y-4">
-            <h1 className="text-3xl font-bold">Dealing roles…</h1>
+            <h1 className="text-3xl">Dealing roles…</h1>
             <p className="text-zinc-500">Hang on — your role is on the way.</p>
             {error && <p className="text-red-400 text-sm">{error}</p>}
             <button
               type="button"
               onClick={leaveGame}
               disabled={busy}
-              className="w-full rounded-xl bg-zinc-800 py-3 text-sm"
+              className="press-btn w-full rounded-xl bg-zinc-800 py-3 text-sm"
             >
               Leave game
             </button>
@@ -545,10 +545,10 @@ export default function App() {
     });
 
     return (
-      <main className="min-h-screen bg-zinc-950 text-zinc-50 p-6">
+      <main className="min-h-screen text-zinc-50 p-6">
         <div className="mx-auto w-full max-w-sm space-y-4">
           <p className="text-center text-zinc-500 text-sm">You are</p>
-          <h1 className="text-center text-4xl font-bold">{info.title}</h1>
+          <h1 className="text-center text-4xl">{info.title}</h1>
           <p className="text-center text-zinc-400">{info.blurb}</p>
 
           {myRole === "mafia" && (
@@ -578,7 +578,7 @@ export default function App() {
                   type="button"
                   disabled={busy}
                   onClick={() => submitNight(p.id)}
-                  className="w-full rounded-xl bg-zinc-900 py-3"
+                  className="press-btn w-full rounded-xl bg-zinc-900 py-3"
                 >
                   {p.name}
                   {p.user_id === myUserId ? " (you)" : ""}
@@ -598,7 +598,7 @@ export default function App() {
             type="button"
             onClick={leaveGame}
             disabled={busy}
-            className="w-full rounded-xl bg-zinc-800 py-3 text-sm"
+            className="press-btn w-full rounded-xl bg-zinc-800 py-3 text-sm"
           >
             Leave game
           </button>
@@ -609,11 +609,11 @@ export default function App() {
 
   if (room) {
     return (
-      <main className="min-h-screen bg-zinc-950 text-zinc-50 p-6">
+      <main className="min-h-screen text-zinc-50 p-6">
         <div className="mx-auto w-full max-w-sm space-y-6">
           <div className="text-center">
             <p className="text-zinc-400 text-sm">Room code</p>
-            <p className="text-4xl font-bold tracking-[0.3em] mt-1">
+            <p className="font-display text-4xl tracking-[0.3em] mt-1">
               {room.code}
             </p>
             <p className="text-zinc-500 text-sm mt-2">
@@ -638,7 +638,7 @@ export default function App() {
             type="button"
             onClick={startGame}
             disabled={!canStart || busy}
-            className="w-full rounded-xl bg-red-700 py-4 text-lg font-semibold disabled:bg-zinc-800 disabled:text-zinc-500"
+            className="press-btn press-btn-danger w-full rounded-xl bg-red-700 py-4 text-lg font-semibold disabled:bg-zinc-800 disabled:text-zinc-500"
           >
             {me?.is_host
               ? canStart
@@ -654,7 +654,7 @@ export default function App() {
               if (!room) return;
               void navigator.clipboard.writeText(room.code);
             }}
-            className="w-full rounded-xl bg-zinc-900 py-3 text-sm"
+            className="press-btn w-full rounded-xl bg-zinc-900 py-3 text-sm"
           >
             Copy room code
           </button>
@@ -662,7 +662,7 @@ export default function App() {
             type="button"
             onClick={leaveGame}
             disabled={busy}
-            className="w-full rounded-xl bg-zinc-800 py-3 text-sm"
+            className="press-btn w-full rounded-xl bg-zinc-800 py-3 text-sm"
           >
             Leave game
           </button>
@@ -672,9 +672,9 @@ export default function App() {
   }
 
   return (
-    <main className="min-h-screen bg-zinc-950 text-zinc-50 flex items-center justify-center p-6">
+    <main className="min-h-screen text-zinc-50 flex items-center justify-center p-6">
       <div className="w-full max-w-sm space-y-4">
-        <h1 className="text-3xl font-bold text-center">Mafia</h1>
+        <h1 className="text-4xl text-center">Mafia</h1>
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -685,7 +685,7 @@ export default function App() {
           type="button"
           onClick={createRoom}
           disabled={busy}
-          className="w-full rounded-xl bg-red-700 py-4 text-lg font-semibold disabled:opacity-50"
+          className="press-btn press-btn-danger w-full rounded-xl bg-red-700 py-4 text-lg font-semibold disabled:opacity-50"
         >
           Create room
         </button>
@@ -701,7 +701,7 @@ export default function App() {
             type="button"
             onClick={joinRoom}
             disabled={busy}
-            className="rounded-xl bg-zinc-800 px-4 font-semibold disabled:opacity-50"
+            className="press-btn rounded-xl bg-zinc-800 px-4 py-3 font-semibold disabled:opacity-50"
           >
             Join
           </button>
