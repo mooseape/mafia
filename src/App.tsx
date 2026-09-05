@@ -16,7 +16,11 @@ type Room = {
   status: string;
   announcement?: string | null;
   winner?: string | null;
+  discuss_seconds?: number | null;
+  discuss_ends_at?: string | null;
 };
+
+const DEFAULT_DISCUSS_SECONDS = 150;
 
 const ROLE_TEXT: Record<string, { title: string; blurb: string }> = {
   civilian: {
@@ -41,6 +45,13 @@ const ROLE_TEXT: Record<string, { title: string; blurb: string }> = {
     blurb: "You win only if the town votes you out.",
   },
 };
+
+function formatClock(totalSeconds: number) {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${r.toString().padStart(2, "0")}`;
+}
 
 function randomCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -81,6 +92,10 @@ export default function App() {
   const [note, setNote] = useState<string | null>(null);
   const prevStatusRef = useRef<string | null>(null);
   const joinedRoomIdRef = useRef<string | null>(null);
+  const advancingDiscussRef = useRef(false);
+  const localDiscussEndRef = useRef<number | null>(null);
+  const [discussSeconds, setDiscussSeconds] = useState(DEFAULT_DISCUSS_SECONDS);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const me = players.find((p) => p.user_id === myUserId);
   const canStart =
@@ -273,6 +288,59 @@ export default function App() {
     return () => clearInterval(t);
   }, [room?.id, room?.status, myUserId]);
 
+  useEffect(() => {
+    if (room?.discuss_seconds && room.discuss_seconds > 0) {
+      setDiscussSeconds(room.discuss_seconds);
+    }
+  }, [room?.id, room?.discuss_seconds]);
+
+  useEffect(() => {
+    if (room?.status === "day" && /tied|vote again/i.test(room.announcement ?? "")) {
+      setPicked(null);
+    }
+  }, [room?.announcement, room?.status]);
+
+  useEffect(() => {
+    if (room?.status !== "dawn" && room?.status !== "discuss") {
+      advancingDiscussRef.current = false;
+      localDiscussEndRef.current = null;
+      return;
+    }
+    if (room.discuss_ends_at) {
+      localDiscussEndRef.current = new Date(room.discuss_ends_at).getTime();
+    } else if (localDiscussEndRef.current === null) {
+      localDiscussEndRef.current =
+        Date.now() +
+        (room.discuss_seconds ?? discussSeconds ?? DEFAULT_DISCUSS_SECONDS) *
+          1000;
+    }
+    const tick = setInterval(() => setNowMs(Date.now()), 250);
+    return () => clearInterval(tick);
+  }, [
+    room?.status,
+    room?.discuss_ends_at,
+    room?.discuss_seconds,
+    discussSeconds,
+  ]);
+
+  useEffect(() => {
+    if (!room || (room.status !== "dawn" && room.status !== "discuss")) return;
+    const end = room.discuss_ends_at
+      ? new Date(room.discuss_ends_at).getTime()
+      : localDiscussEndRef.current;
+    if (end === null || Number.isNaN(end)) return;
+    if (nowMs < end) return;
+    if (advancingDiscussRef.current) return;
+    advancingDiscussRef.current = true;
+    void (async () => {
+      const timed = await supabase.rpc("maybe_begin_day");
+      if (timed.error) {
+        await supabase.rpc("begin_day");
+      }
+      await refreshRoom(room.id);
+    })();
+  }, [nowMs, room?.id, room?.status, room?.discuss_ends_at]);
+
   async function createRoom() {
     setError("");
     if (!name.trim()) {
@@ -284,12 +352,27 @@ export default function App() {
       const user = await ensureSignedIn();
       setMyUserId(user.id);
       const code = randomCode();
-      const { data: newRoom, error: roomError } = await supabase
+      const payload: Record<string, unknown> = {
+        code,
+        host_id: user.id,
+        status: "lobby",
+        discuss_seconds: DEFAULT_DISCUSS_SECONDS,
+      };
+      let { data: newRoom, error: roomError } = await supabase
         .from("rooms")
-        .insert({ code, host_id: user.id, status: "lobby" })
+        .insert(payload)
         .select()
         .single();
-      if (roomError) throw roomError;
+      if (roomError) {
+        const retry = await supabase
+          .from("rooms")
+          .insert({ code, host_id: user.id, status: "lobby" })
+          .select()
+          .single();
+        newRoom = retry.data;
+        roomError = retry.error;
+      }
+      if (roomError || !newRoom) throw roomError ?? new Error("Could not create room");
       const { error: playerError } = await supabase.from("players").insert({
         room_id: newRoom.id,
         user_id: user.id,
@@ -348,6 +431,10 @@ export default function App() {
     setError("");
     setBusy(true);
     try {
+      await supabase
+        .from("rooms")
+        .update({ discuss_seconds: discussSeconds })
+        .eq("id", room.id);
       const { error } = await supabase.rpc("start_game", {
         p_room_id: room.id,
       });
@@ -389,6 +476,17 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function saveDiscussSeconds(next: number) {
+    const secs = Math.min(30 * 60, Math.max(15, next));
+    setDiscussSeconds(secs);
+    if (!room || !me?.is_host || room.status !== "lobby") return;
+    const { error } = await supabase
+      .from("rooms")
+      .update({ discuss_seconds: secs })
+      .eq("id", room.id);
+    if (error) setError(error.message);
   }
 
   async function goToVote() {
@@ -466,15 +564,26 @@ export default function App() {
     );
   }
 
-  if (room && room.status === "dawn") {
+  if (room && (room.status === "dawn" || room.status === "discuss")) {
+    const endMs = room.discuss_ends_at
+      ? new Date(room.discuss_ends_at).getTime()
+      : (localDiscussEndRef.current ?? NaN);
+    const remaining = Number.isFinite(endMs)
+      ? Math.max(0, Math.ceil((endMs - nowMs) / 1000))
+      : DEFAULT_DISCUSS_SECONDS;
+
     return (
       <main className="min-h-screen text-zinc-50 flex items-center justify-center p-6">
         <div className="w-full max-w-sm text-center space-y-4">
-          <h1 className="text-3xl">Morning</h1>
+          <h1 className="text-3xl">Discuss</h1>
+          <p className="text-5xl font-display tracking-wide">{formatClock(remaining)}</p>
           <p className="text-lg text-zinc-300">
-            {room.announcement ?? "The night is over."}
+            {room.announcement ?? "The night is over. Talk it through."}
           </p>
           {note && <p className="text-amber-300">{note}</p>}
+          <p className="text-zinc-500 text-sm">
+            Voting starts when the timer hits zero.
+          </p>
           {error && <p className="text-red-400 text-sm">{error}</p>}
           <button
             type="button"
@@ -482,7 +591,7 @@ export default function App() {
             disabled={busy}
             className="press-btn press-btn-danger w-full rounded-xl bg-red-700 py-4 text-lg font-semibold"
           >
-            Go to vote
+            Vote now
           </button>
           <button
             type="button"
@@ -668,6 +777,53 @@ export default function App() {
             ))}
           </ul>
           {error && <p className="text-red-400 text-sm">{error}</p>}
+          {me?.is_host && room.status === "lobby" && (
+            <div className="rounded-xl bg-zinc-900 px-4 py-3 space-y-2">
+              <p className="text-sm text-zinc-400">Discussion timer</p>
+              <div className="flex gap-2 items-center">
+                <input
+                  type="number"
+                  min={0}
+                  max={30}
+                  value={Math.floor(discussSeconds / 60)}
+                  onChange={(e) => {
+                    const minutes = Number(e.target.value);
+                    const seconds = discussSeconds % 60;
+                    void saveDiscussSeconds(
+                      (Number.isFinite(minutes) ? minutes : 0) * 60 + seconds,
+                    );
+                  }}
+                  className="w-20 rounded-lg bg-zinc-800 px-3 py-2 outline-none"
+                />
+                <span className="text-zinc-500 text-sm">min</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={59}
+                  value={discussSeconds % 60}
+                  onChange={(e) => {
+                    const minutes = Math.floor(discussSeconds / 60);
+                    const seconds = Number(e.target.value);
+                    void saveDiscussSeconds(
+                      minutes * 60 + (Number.isFinite(seconds) ? seconds : 0),
+                    );
+                  }}
+                  className="w-20 rounded-lg bg-zinc-800 px-3 py-2 outline-none"
+                />
+                <span className="text-zinc-500 text-sm">sec</span>
+              </div>
+              <p className="text-zinc-500 text-xs">
+                After each night, town talks for {formatClock(discussSeconds)}{" "}
+                then votes.
+              </p>
+            </div>
+          )}
+          {!me?.is_host && room.status === "lobby" && (
+            <p className="text-center text-zinc-500 text-sm">
+              Discussion after night:{" "}
+              {formatClock(room.discuss_seconds ?? discussSeconds)}
+            </p>
+          )}
           <button
             type="button"
             onClick={startGame}
