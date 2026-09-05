@@ -80,6 +80,7 @@ export default function App() {
   const [picked, setPicked] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const prevStatusRef = useRef<string | null>(null);
+  const joinedRoomIdRef = useRef<string | null>(null);
 
   const me = players.find((p) => p.user_id === myUserId);
   const canStart =
@@ -135,12 +136,30 @@ export default function App() {
   }
 
   async function refreshRoom(roomId: string) {
+    if (joinedRoomIdRef.current !== roomId) return;
     const { data } = await supabase
       .from("rooms")
       .select("*")
       .eq("id", roomId)
       .single();
+    if (joinedRoomIdRef.current !== roomId) return;
     if (data) setRoom(data as Room);
+  }
+
+  function enterRoom(next: Room) {
+    joinedRoomIdRef.current = next.id;
+    setRoom(next);
+  }
+
+  function clearLocalGame() {
+    joinedRoomIdRef.current = null;
+    setRoom(null);
+    setPlayers([]);
+    setLiving([]);
+    setMyRole(null);
+    setPicked(null);
+    setNote(null);
+    prevStatusRef.current = null;
   }
   useEffect(() => {
     async function restore() {
@@ -165,7 +184,9 @@ export default function App() {
         .eq("id", row.room_id)
         .maybeSingle();
 
-      if (existing) setRoom(existing as Room);
+      if (existing && existing.status !== "ended") {
+        enterRoom(existing as Room);
+      }
     }
 
     restore();
@@ -230,7 +251,7 @@ export default function App() {
 
   useEffect(() => {
     if (!room || !myUserId) return;
-    if (room.status === "lobby") return;
+    if (room.status === "lobby" || room.status === "ended") return;
 
     const statusChanged = prevStatusRef.current !== room.status;
     if (statusChanged && (room.status === "night" || room.status === "day")) {
@@ -276,7 +297,7 @@ export default function App() {
         is_host: true,
       });
       if (playerError) throw playerError;
-      setRoom(newRoom as Room);
+      enterRoom(newRoom as Room);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not create room");
     } finally {
@@ -314,7 +335,7 @@ export default function App() {
         is_host: false,
       });
       if (playerError) throw playerError;
-      setRoom(found as Room);
+      enterRoom(found as Room);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not join room");
     } finally {
@@ -393,21 +414,23 @@ export default function App() {
   }
 
   async function leaveGame() {
+    const roomId = room?.id;
     setError("");
     setBusy(true);
+    joinedRoomIdRef.current = null;
     try {
       const { error } = await supabase.rpc("leave_game");
-      if (error) throw error;
-      setRoom(null);
-      setPlayers([]);
-      setLiving([]);
-      setMyRole(null);
-      setPicked(null);
-      setNote(null);
-      prevStatusRef.current = null;
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not leave");
+      if (error && roomId && myUserId) {
+        await supabase
+          .from("players")
+          .delete()
+          .eq("room_id", roomId)
+          .eq("user_id", myUserId);
+      }
+    } catch {
+      // Still leave locally so Game over is never a trap.
     } finally {
+      clearLocalGame();
       setBusy(false);
     }
   }
@@ -419,6 +442,7 @@ export default function App() {
           <h1 className="text-4xl">Game over</h1>
           <p className="text-lg text-zinc-300">{room.announcement}</p>
           <p className="text-zinc-500">Winner: {room.winner ?? "unknown"}</p>
+          {error && <p className="text-red-400 text-sm">{error}</p>}
           <button
             type="button"
             onClick={leaveGame}
