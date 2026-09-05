@@ -9,10 +9,12 @@ security definer
 set search_path = public
 as $$
 declare
+  prior text;
   victim_name text;
   victim_alive boolean;
   mafia_target uuid;
   doctor_target uuid;
+  dead_n int;
   story text;
   kills text[] := array[
     '{name} was found at first light, still in the street. Nobody heard a thing.',
@@ -39,14 +41,20 @@ declare
     'The night reached for {name} and missed. They will not say more.'
   ];
 begin
+  select r.announcement into prior from public.rooms r where r.id = p_room_id;
+
   begin
-    select na.target_id into mafia_target
-    from public.night_actions na
-    join public.players p on p.id = na.player_id
-    where na.room_id = p_room_id
-      and p.role = 'mafia'
-      and na.target_id is not null
-    order by na.id desc
+    select v.id into mafia_target
+    from public.players v
+    join public.night_actions na
+      on na.room_id = p_room_id
+     and (na.target_id = v.id or na.target_id = v.user_id)
+    join public.players a
+      on a.room_id = p_room_id
+     and (a.id = na.player_id or a.user_id = na.player_id)
+    where v.room_id = p_room_id
+      and a.role = 'mafia'
+    order by coalesce(v.is_alive, true), v.name
     limit 1;
   exception
     when others then
@@ -54,38 +62,63 @@ begin
   end;
 
   begin
-    select na.target_id into doctor_target
-    from public.night_actions na
-    join public.players p on p.id = na.player_id
-    where na.room_id = p_room_id
-      and p.role = 'doctor'
-      and na.target_id is not null
-    order by na.id desc
+    select v.id into doctor_target
+    from public.players v
+    join public.night_actions na
+      on na.room_id = p_room_id
+     and (na.target_id = v.id or na.target_id = v.user_id)
+    join public.players a
+      on a.room_id = p_room_id
+     and (a.id = na.player_id or a.user_id = na.player_id)
+    where v.room_id = p_room_id
+      and a.role = 'doctor'
     limit 1;
   exception
     when others then
       doctor_target := null;
   end;
 
-  if mafia_target is null then
-    story := 'The streets were empty till dawn. Nobody is missing.';
-  else
+  if mafia_target is not null then
+    select p.name, coalesce(p.is_alive, true)
+      into victim_name, victim_alive
+    from public.players p
+    where p.id = mafia_target;
+  end if;
+
+  if victim_name is null then
     select p.name, coalesce(p.is_alive, true)
       into victim_name, victim_alive
     from public.players p
     where p.room_id = p_room_id
-      and (p.id = mafia_target or p.user_id = mafia_target)
+      and prior is not null
+      and position(lower(p.name) in lower(prior)) > 0
+    order by char_length(p.name) desc
     limit 1;
+  end if;
 
-    victim_name := coalesce(victim_name, 'Someone');
-
-    if not victim_alive then
-      story := replace(kills[1 + floor(random() * 10)::int], '{name}', victim_name);
-    elsif doctor_target is not distinct from mafia_target then
-      story := replace(saves[1 + floor(random() * 10)::int], '{name}', victim_name);
-    else
-      story := 'The streets were empty till dawn. Nobody is missing.';
+  if victim_name is null then
+    select count(*) into dead_n
+    from public.players p
+    where p.room_id = p_room_id and not coalesce(p.is_alive, true);
+    if dead_n = 1 then
+      select p.name, false into victim_name, victim_alive
+      from public.players p
+      where p.room_id = p_room_id and not coalesce(p.is_alive, true)
+      limit 1;
     end if;
+  end if;
+
+  if victim_name is null then
+    story := 'The streets were empty till dawn. Nobody is missing.';
+  elsif victim_alive = false then
+    story := replace(kills[1 + floor(random() * 10)::int], '{name}', victim_name)
+      || E'\n\nKilled: ' || victim_name;
+  elsif doctor_target is not distinct from mafia_target
+     or (prior is not null and prior !~* 'streets were empty|nobody is missing') then
+    story := replace(saves[1 + floor(random() * 10)::int], '{name}', victim_name)
+      || E'\n\nSurvived: ' || victim_name;
+  else
+    story := 'The streets were empty till dawn. Nobody is missing.';
   end if;
 
   update public.rooms

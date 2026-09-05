@@ -91,6 +91,84 @@ function nightStory(templates: string[], name: string) {
   return story.replaceAll("{name}", name);
 }
 
+function isQuietNightText(text: string | null | undefined) {
+  return /streets were empty|nobody is missing|nobody was missing/i.test(
+    text ?? "",
+  );
+}
+
+function playerMentioned(text: string, playerName: string) {
+  if (!text || !playerName) return false;
+  return text.toLowerCase().includes(playerName.trim().toLowerCase());
+}
+
+function resolveNightOutcome(
+  people: { id: string; user_id: string; name: string; is_alive: boolean; role: string | null }[],
+  actions: { player_id: string; target_id: string | null }[] | null,
+  priorAnnouncement: string | null,
+) {
+  const actedAs = (id: string, role: string) =>
+    people.some(
+      (p) =>
+        p.role === role &&
+        (p.id === id || p.user_id === id),
+    );
+  const byId = (id: string | null | undefined) =>
+    people.find((p) => p.id === id || p.user_id === id);
+  const mafiaTarget = [...(actions ?? [])]
+    .reverse()
+    .find((a) => a.target_id && actedAs(a.player_id, "mafia"))?.target_id;
+  const doctorTarget = [...(actions ?? [])]
+    .reverse()
+    .find((a) => a.target_id && actedAs(a.player_id, "doctor"))?.target_id;
+  const victim = byId(mafiaTarget);
+  if (victim && victim.is_alive === false) {
+    return { kind: "kill" as const, name: victim.name };
+  }
+  if (
+    victim &&
+    doctorTarget &&
+    (doctorTarget === mafiaTarget || doctorTarget === victim.id)
+  ) {
+    return { kind: "save" as const, name: victim.name };
+  }
+
+  const prior = priorAnnouncement ?? "";
+  const mentioned = [...people]
+    .sort((a, b) => b.name.length - a.name.length)
+    .find((p) => playerMentioned(prior, p.name));
+  if (mentioned && mentioned.is_alive === false) {
+    return { kind: "kill" as const, name: mentioned.name };
+  }
+  if (mentioned && mentioned.is_alive !== false && !isQuietNightText(prior)) {
+    return { kind: "save" as const, name: mentioned.name };
+  }
+
+  const dead = people.filter((p) => p.is_alive === false);
+  if (dead.length === 1) {
+    return { kind: "kill" as const, name: dead[0].name };
+  }
+  return { kind: "quiet" as const, name: null };
+}
+
+function formatNightAnnouncement(kind: "kill" | "save" | "quiet", name: string | null) {
+  if (kind === "kill" && name) {
+    return `${nightStory(NIGHT_KILL_STORIES, name)}\n\nKilled: ${name}`;
+  }
+  if (kind === "save" && name) {
+    return `${nightStory(NIGHT_SAVE_STORIES, name)}\n\nSurvived: ${name}`;
+  }
+  return "The streets were empty till dawn. Nobody is missing.";
+}
+
+function nightAnnouncementView(text: string | null | undefined) {
+  const raw = text ?? "";
+  const killed = raw.match(/\nKilled:\s*(.+)\s*$/m)?.[1]?.trim() ?? null;
+  const survived = raw.match(/\nSurvived:\s*(.+)\s*$/m)?.[1]?.trim() ?? null;
+  const story = raw.replace(/\n\n(?:Killed|Survived):[\s\S]*$/m, "").trim();
+  return { story, killed, survived };
+}
+
 function formatClock(totalSeconds: number) {
   const s = Math.max(0, Math.floor(totalSeconds));
   const m = Math.floor(s / 60);
@@ -383,44 +461,34 @@ export default function App() {
     }
     const key = `${room.id}:${room.discuss_ends_at ?? "dawn"}`;
     if (nightStoryKeyRef.current === key) return;
+    if (living.length === 0) return;
+    nightStoryKeyRef.current = key;
     void (async () => {
-      const { data, error } = await supabase.rpc("apply_night_story", {
-        p_room_id: room.id,
-      });
-      if (!error && typeof data === "string" && data) {
-        nightStoryKeyRef.current = key;
-        setRoom((prev) =>
-          prev && prev.id === room.id ? { ...prev, announcement: data } : prev,
-        );
-        return;
-      }
-      if (living.length === 0) return;
-      nightStoryKeyRef.current = key;
       const { data: actions } = await supabase
         .from("night_actions")
         .select("player_id, target_id")
         .eq("room_id", room.id);
-      const mafiaIds = new Set(
-        living.filter((p) => p.role === "mafia").map((p) => p.id),
+      let outcome = resolveNightOutcome(
+        living,
+        actions ?? [],
+        room.announcement ?? "",
       );
-      const doctorIds = new Set(
-        living.filter((p) => p.role === "doctor").map((p) => p.id),
-      );
-      const mafiaTarget = [...(actions ?? [])]
-        .reverse()
-        .find((a) => mafiaIds.has(a.player_id))?.target_id;
-      const doctorTarget = [...(actions ?? [])]
-        .reverse()
-        .find((a) => doctorIds.has(a.player_id))?.target_id;
-      const victim = living.find(
-        (p) => p.id === mafiaTarget || p.user_id === mafiaTarget,
-      );
-      let story = "The streets were empty till dawn. Nobody is missing.";
-      if (victim && victim.is_alive === false) {
-        story = nightStory(NIGHT_KILL_STORIES, victim.name);
-      } else if (victim && doctorTarget === mafiaTarget) {
-        story = nightStory(NIGHT_SAVE_STORIES, victim.name);
+      if (outcome.kind === "quiet") {
+        const { data } = await supabase.rpc("apply_night_story", {
+          p_room_id: room.id,
+        });
+        if (typeof data === "string" && data && !isQuietNightText(data)) {
+          setRoom((prev) =>
+            prev && prev.id === room.id ? { ...prev, announcement: data } : prev,
+          );
+          return;
+        }
+        const dead = living.filter((p) => p.is_alive === false);
+        if (dead.length === 1) {
+          outcome = { kind: "kill", name: dead[0].name };
+        }
       }
+      const story = formatNightAnnouncement(outcome.kind, outcome.name);
       await supabase
         .from("rooms")
         .update({ announcement: story })
@@ -804,9 +872,26 @@ export default function App() {
         <div className="w-full max-w-sm text-center space-y-4">
           <h1 className="text-3xl">Discuss</h1>
           <p className="text-5xl font-display tracking-wide">{formatClock(remaining)}</p>
-          <p className="text-lg text-zinc-300">
-            {room.announcement ?? "The night is over. Talk it through."}
-          </p>
+          {(() => {
+            const night = nightAnnouncementView(room.announcement);
+            return (
+              <>
+                <p className="text-lg text-zinc-300">
+                  {night.story || "The night is over. Talk it through."}
+                </p>
+                {night.killed && (
+                  <p className="text-red-400 text-xl font-semibold">
+                    Killed: {night.killed}
+                  </p>
+                )}
+                {night.survived && (
+                  <p className="text-amber-300 text-lg font-semibold">
+                    Survived: {night.survived}
+                  </p>
+                )}
+              </>
+            );
+          })()}
           {note && <p className="text-amber-300">{note}</p>}
           <p className="text-zinc-500 text-sm">
             Voting starts when the timer hits zero.
