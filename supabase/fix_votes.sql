@@ -1,5 +1,9 @@
 -- Run this file by itself. Select all of it. Do not run a collapsed preview.
 
+alter table public.rooms add column if not exists next_status text;
+alter table public.rooms add column if not exists next_winner text;
+alter table public.rooms add column if not exists next_announcement text;
+
 create table if not exists public.votes (
   id uuid primary key default gen_random_uuid(),
   room_id uuid not null,
@@ -104,8 +108,12 @@ begin
 
   if victim.role = 'jester' then
     update public.rooms
-    set status = 'ended', winner = 'jester',
-        announcement = victim_name || ' was voted out. The Jester wins.'
+    set
+      status = 'vote_reveal',
+      announcement = victim_name || ' was voted out.',
+      next_status = 'ended',
+      next_winner = 'jester',
+      next_announcement = victim_name || ' was voted out. The Jester wins.'
     where id = me.room_id;
     return;
   end if;
@@ -122,23 +130,35 @@ begin
 
   if mafia_alive = 0 then
     update public.rooms
-    set status = 'ended', winner = 'town',
-        announcement = victim_name || ' was voted out. Town wins.'
+    set
+      status = 'vote_reveal',
+      announcement = victim_name || ' was voted out.',
+      next_status = 'ended',
+      next_winner = 'town',
+      next_announcement = victim_name || ' was voted out. Town wins.'
     where id = me.room_id;
     return;
   end if;
 
   if mafia_alive >= others_alive then
     update public.rooms
-    set status = 'ended', winner = 'mafia',
-        announcement = victim_name || ' was voted out. Mafia wins.'
+    set
+      status = 'vote_reveal',
+      announcement = victim_name || ' was voted out.',
+      next_status = 'ended',
+      next_winner = 'mafia',
+      next_announcement = victim_name || ' was voted out. Mafia wins.'
     where id = me.room_id;
     return;
   end if;
 
   update public.rooms
-  set status = 'night',
-      announcement = victim_name || ' was voted out. Night falls.'
+  set
+    status = 'vote_reveal',
+    announcement = victim_name || ' was voted out.',
+    next_status = 'night',
+    next_winner = null,
+    next_announcement = victim_name || ' was voted out. Night falls.'
   where id = me.room_id;
 end;
 $$;

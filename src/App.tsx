@@ -23,9 +23,17 @@ type Room = {
   include_doctor?: boolean | null;
   include_detective?: boolean | null;
   include_jester?: boolean | null;
+  next_status?: string | null;
+  next_winner?: string | null;
+  next_announcement?: string | null;
 };
 
 const DEFAULT_DISCUSS_SECONDS = 150;
+const VOTE_REVEAL_MS = 7000;
+
+function votedOutName(announcement: string | null | undefined) {
+  return announcement?.match(/^(.+?) was voted out/i)?.[1]?.trim() ?? null;
+}
 const LOBBY_SETTINGS_SQL_HINT =
   "Run supabase/lobby_settings.sql in the Supabase SQL editor (the whole file), wait a few seconds, then try again.";
 
@@ -249,6 +257,12 @@ export default function App() {
   const advancingDiscussRef = useRef(false);
   const localDiscussEndRef = useRef<number | null>(null);
   const nightStoryKeyRef = useRef<string | null>(null);
+  const prevForVoteRef = useRef<string | null>(null);
+  const voteRevealKeyRef = useRef<string | null>(null);
+  const [voteReveal, setVoteReveal] = useState<{
+    name: string;
+    until: number;
+  } | null>(null);
   const [discussSeconds, setDiscussSeconds] = useState(DEFAULT_DISCUSS_SECONDS);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [mafiaCanKill, setMafiaCanKill] = useState(true);
@@ -334,6 +348,9 @@ export default function App() {
     setPicked(null);
     setNote(null);
     prevStatusRef.current = null;
+    prevForVoteRef.current = null;
+    voteRevealKeyRef.current = null;
+    setVoteReveal(null);
   }
   useEffect(() => {
     async function restore() {
@@ -421,7 +438,37 @@ export default function App() {
 
   useEffect(() => {
     prevStatusRef.current = null;
+    prevForVoteRef.current = null;
+    voteRevealKeyRef.current = null;
+    setVoteReveal(null);
   }, [room?.id]);
+
+  useEffect(() => {
+    if (!room) return;
+    const prev = prevForVoteRef.current;
+    const name = votedOutName(room.announcement);
+    const revealPhase = room.status === "vote_reveal";
+    const leftDay =
+      prev === "day" &&
+      (room.status === "night" ||
+        room.status === "ended" ||
+        room.status === "reveal" ||
+        revealPhase);
+    if ((revealPhase || leftDay) && name) {
+      const key = `${room.id}:${room.announcement}`;
+      if (voteRevealKeyRef.current !== key) {
+        voteRevealKeyRef.current = key;
+        setVoteReveal({ name, until: Date.now() + VOTE_REVEAL_MS });
+      }
+    }
+    prevForVoteRef.current = room.status;
+  }, [room?.id, room?.status, room?.announcement]);
+
+  useEffect(() => {
+    if (!voteReveal && room?.status !== "vote_reveal") return;
+    const tick = setInterval(() => setNowMs(Date.now()), 250);
+    return () => clearInterval(tick);
+  }, [voteReveal, room?.status]);
 
   useEffect(() => {
     if (!room || !myUserId) return;
@@ -799,6 +846,14 @@ export default function App() {
     }
   }
 
+  async function finishVoteReveal() {
+    if (room?.status === "vote_reveal") {
+      await supabase.rpc("finish_vote_reveal");
+      await refreshRoom(room.id);
+    }
+    setVoteReveal(null);
+  }
+
   async function submitVote(targetId: string) {
     setError("");
     setBusy(true);
@@ -836,6 +891,56 @@ export default function App() {
       clearLocalGame();
       setBusy(false);
     }
+  }
+
+  useEffect(() => {
+    if (!voteReveal || nowMs < voteReveal.until) return;
+    if (room?.status === "vote_reveal") {
+      void finishVoteReveal();
+      return;
+    }
+    setVoteReveal(null);
+  }, [nowMs, voteReveal, room?.status]);
+
+  const showingVoteReveal =
+    Boolean(voteReveal && nowMs < voteReveal.until) ||
+    room?.status === "vote_reveal";
+
+  if (room && showingVoteReveal) {
+    const who = voteReveal?.name ?? votedOutName(room.announcement) ?? "Someone";
+    const left = voteReveal
+      ? Math.max(0, Math.ceil((voteReveal.until - nowMs) / 1000))
+      : 7;
+    return (
+      <main className="min-h-screen text-zinc-50 flex items-center justify-center p-6">
+        <div className="w-full max-w-sm text-center space-y-4">
+          <h1 className="text-3xl">Voted out</h1>
+          <p className="text-5xl font-display tracking-wide text-red-400">{who}</p>
+          <p className="text-lg text-zinc-300">The town has spoken.</p>
+          <p className="text-zinc-500 text-sm">
+            Continuing in {left}s
+          </p>
+          {me?.is_host && (
+            <button
+              type="button"
+              onClick={() => void finishVoteReveal()}
+              disabled={busy}
+              className="press-btn press-btn-danger w-full rounded-xl bg-red-700 py-4 text-lg font-semibold"
+            >
+              Continue
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={leaveGame}
+            disabled={busy}
+            className="press-btn w-full rounded-xl bg-zinc-800 py-3 text-sm"
+          >
+            Leave game
+          </button>
+        </div>
+      </main>
+    );
   }
 
   if (room && room.status === "ended") {
