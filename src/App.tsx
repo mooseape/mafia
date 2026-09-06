@@ -455,6 +455,8 @@ export default function App() {
       (room.status === "night" ||
         room.status === "ended" ||
         room.status === "reveal" ||
+        room.status === "dawn" ||
+        room.status === "discuss" ||
         revealPhase);
     if ((revealPhase || leftDay) && name) {
       const key = `${room.id}:${room.announcement}`;
@@ -546,6 +548,10 @@ export default function App() {
     const key = `${room.id}:${room.discuss_ends_at ?? "dawn"}`;
     if (nightStoryKeyRef.current === key) return;
     if (living.length === 0) return;
+    if (room.mafia_can_kill === false) {
+      nightStoryKeyRef.current = key;
+      return;
+    }
     nightStoryKeyRef.current = key;
     void (async () => {
       const { data: actions } = await supabase
@@ -640,8 +646,22 @@ export default function App() {
     if (!room) return;
     if (room.status !== "night" && room.status !== "reveal") return;
     if (room.mafia_can_kill !== false) return;
-    void supabase.rpc("skip_disarmed_mafia", { p_room_id: room.id });
-  }, [room?.id, room?.status, room?.mafia_can_kill]);
+    void (async () => {
+      const { error } = await supabase.rpc("skip_night_phase", {
+        p_room_id: room.id,
+      });
+      if (error) {
+        await supabase
+          .from("rooms")
+          .update({
+            status: "dawn",
+            announcement: room.announcement || "Talk it through, then vote.",
+          })
+          .eq("id", room.id);
+      }
+      await refreshRoom(room.id);
+    })();
+  }, [room?.id, room?.status, room?.mafia_can_kill, room?.announcement]);
 
   async function createRoom() {
     setError("");
@@ -754,12 +774,19 @@ export default function App() {
     setError("");
     setBusy(true);
     try {
+      const { error: killFlagError } = await supabase
+        .from("rooms")
+        .update({ mafia_can_kill: mafiaCanKill })
+        .eq("id", room.id);
+      if (killFlagError && !isMissingRoomsColumn(killFlagError.message)) {
+        throw new Error(killFlagError.message);
+      }
       const { error: settingsError } = await supabase
         .from("rooms")
         .update({
           discuss_seconds: DEFAULT_DISCUSS_SECONDS,
           winner: null,
-          announcement: null,
+          announcement: mafiaCanKill ? null : "Talk it through, then vote.",
           mafia_can_kill: mafiaCanKill,
           include_mafia: true,
           include_doctor: includeDoctor,
@@ -774,6 +801,12 @@ export default function App() {
         p_room_id: room.id,
       });
       if (error) throw error;
+      if (!mafiaCanKill) {
+        await supabase
+          .from("rooms")
+          .update({ mafia_can_kill: false })
+          .eq("id", room.id);
+      }
       const { error: dealError } = await supabase.rpc("deal_configured_roles", {
         p_room_id: room.id,
         p_include_doctor: includeDoctor,
@@ -792,6 +825,21 @@ export default function App() {
       });
       if (shuffleError && !shuffleError.message.includes("shuffle_room_roles")) {
         throw new Error(shuffleError.message);
+      }
+      if (!mafiaCanKill) {
+        const { error: skipError } = await supabase.rpc("skip_night_phase", {
+          p_room_id: room.id,
+        });
+        if (skipError) {
+          await supabase
+            .from("rooms")
+            .update({
+              status: "dawn",
+              mafia_can_kill: false,
+              announcement: "Talk it through, then vote.",
+            })
+            .eq("id", room.id);
+        }
       }
       await refreshRoom(room.id);
       if (myUserId) await loadMyRole(room.id, myUserId);
@@ -1057,19 +1105,28 @@ export default function App() {
         <div className="w-full max-w-sm text-center space-y-4">
           <h1 className="text-3xl">Discuss</h1>
           <p className="text-5xl font-display tracking-wide">{formatClock(remaining)}</p>
+          {myRole && (
+            <p className="text-zinc-400 text-sm">
+              You are {ROLE_TEXT[myRole]?.title ?? myRole}
+            </p>
+          )}
           {(() => {
+            const dayOnly = room.mafia_can_kill === false;
             const night = nightAnnouncementView(room.announcement);
+            const story = dayOnly
+              ? night.story && !isQuietNightText(night.story)
+                ? night.story
+                : "No night kills. Talk it through, then vote."
+              : night.story || "The night is over. Talk it through.";
             return (
               <>
-                <p className="text-lg text-zinc-300">
-                  {night.story || "The night is over. Talk it through."}
-                </p>
-                {night.killed && (
+                <p className="text-lg text-zinc-300">{story}</p>
+                {!dayOnly && night.killed && (
                   <p className="text-red-400 text-xl font-semibold">
                     Killed: {night.killed}
                   </p>
                 )}
-                {night.survived && (
+                {!dayOnly && night.survived && (
                   <p className="text-amber-300 text-lg font-semibold">
                     Survived: {night.survived}
                   </p>
@@ -1174,16 +1231,22 @@ export default function App() {
       );
     }
 
-    const info =
-      myRole === "mafia" && room.mafia_can_kill === false
+    const dayOnly = room.mafia_can_kill === false;
+    const info = dayOnly
+      ? myRole === "mafia"
         ? {
             title: "Mafia",
-            blurb: "You cannot kill tonight. Blend in and survive the vote.",
+            blurb: "There is no night. Blend in and survive the vote.",
           }
-        : (ROLE_TEXT[myRole] ?? { title: myRole, blurb: "" });
+        : {
+            title: ROLE_TEXT[myRole]?.title ?? myRole,
+            blurb: "There is no night. Talk, then vote someone out.",
+          }
+      : (ROLE_TEXT[myRole] ?? { title: myRole, blurb: "" });
     const amAlive = living.some((p) => p.user_id === myUserId && p.is_alive);
     const canAct =
       amAlive &&
+      !dayOnly &&
       ((myRole === "mafia" && room.mafia_can_kill !== false) ||
         myRole === "doctor" ||
         myRole === "detective");
@@ -1243,7 +1306,9 @@ export default function App() {
 
           {amAlive && (!canAct || picked) && (
             <p className="text-center text-zinc-500">
-              Waiting for the night to end…
+              {dayOnly
+                ? "Heading to discussion…"
+                : "Waiting for the night to end…"}
             </p>
           )}
 
@@ -1329,13 +1394,19 @@ export default function App() {
                 />
               </label>
               <p className="text-zinc-500 text-xs pt-1">
-                After night, town talks for 2:30. You can skip to the vote.
+                {mafiaCanKill
+                  ? "After night, town talks for 2:30. You can skip to the vote."
+                  : "No night. Town talks and votes until mafia is out or mafia wins."}
               </p>
             </div>
           )}
           {!me?.is_host && room.status === "lobby" && (
             <div className="text-center text-zinc-500 text-sm space-y-1">
-              <p>Discussion after night: 2:30</p>
+              <p>
+                {room.mafia_can_kill === false
+                  ? "No night. Discuss 2:30, then vote, then discuss again."
+                  : "Discussion after night: 2:30"}
+              </p>
               <p>
                 Roles:{" "}
                 {[

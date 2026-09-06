@@ -18,6 +18,7 @@ declare
   win text;
   ann text;
   st text;
+  can_kill boolean;
 begin
   select p.room_id into rid
   from public.players p
@@ -28,8 +29,9 @@ begin
     return;
   end if;
 
-  select r.status, r.next_status, r.next_winner, r.next_announcement
-    into st, nxt, win, ann
+  select r.status, r.next_status, r.next_winner, r.next_announcement,
+         coalesce(r.mafia_can_kill, true)
+    into st, nxt, win, ann, can_kill
   from public.rooms r
   where r.id = rid;
 
@@ -37,9 +39,13 @@ begin
     return;
   end if;
 
+  if nxt = 'night' and can_kill is not true then
+    nxt := 'dawn';
+  end if;
+
   update public.rooms
   set
-    status = coalesce(nxt, 'night'),
+    status = coalesce(nxt, case when can_kill is not true then 'dawn' else 'night' end),
     winner = win,
     announcement = coalesce(ann, announcement),
     next_status = null,
