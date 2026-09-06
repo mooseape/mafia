@@ -1,31 +1,49 @@
--- Run this file by itself. Select all of it. Do not run a collapsed preview.
+-- Run this file by itself. When mafia cannot kill, skip night and loop discuss/vote.
 
-alter table public.rooms add column if not exists next_status text;
-alter table public.rooms add column if not exists next_winner text;
-alter table public.rooms add column if not exists next_announcement text;
-
-create table if not exists public.votes (
-  id uuid primary key default gen_random_uuid(),
-  room_id uuid not null,
-  voter_id uuid not null,
-  target_id uuid not null,
-  user_id uuid,
-  created_at timestamptz not null default now(),
-  unique (room_id, voter_id)
-);
-
-create index if not exists votes_room_id_idx on public.votes (room_id);
-
-grant select, insert, update, delete on public.votes to anon, authenticated;
-
+drop function if exists public.skip_night_phase(uuid);
+drop function if exists public.finish_vote_reveal();
 drop function if exists public.submit_vote(uuid);
+
+create or replace function public.skip_night_phase(p_room_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $fn_skip$
+declare
+  r public.rooms%rowtype;
+begin
+  select * into r from public.rooms where id = p_room_id;
+  if r.id is null then
+    return;
+  end if;
+  if coalesce(r.mafia_can_kill, true) then
+    return;
+  end if;
+  if r.status is distinct from 'night' and r.status is distinct from 'reveal' then
+    return;
+  end if;
+
+  update public.rooms
+  set
+    status = 'dawn',
+    announcement = case
+      when announcement is null or announcement = ''
+        or announcement ilike '%night falls%'
+      then 'Talk it through, then vote.'
+      else announcement
+    end
+  where id = p_room_id
+    and status in ('night', 'reveal');
+end;
+$fn_skip$;
 
 create or replace function public.submit_vote(p_target_id uuid)
 returns void
 language plpgsql
 security definer
 set search_path = public
-as $$
+as $fn_vote$
 declare
   me public.players%rowtype;
   living_n int;
@@ -177,9 +195,66 @@ begin
     where id = me.room_id;
   end if;
 end;
-$$;
+$fn_vote$;
 
+create or replace function public.finish_vote_reveal()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $fn_reveal$
+declare
+  rid uuid;
+  nxt text;
+  win text;
+  ann text;
+  st text;
+  can_kill boolean;
+begin
+  select p.room_id into rid
+  from public.players p
+  where p.user_id = auth.uid()
+  limit 1;
+
+  if rid is null then
+    return;
+  end if;
+
+  select r.status, r.next_status, r.next_winner, r.next_announcement,
+         coalesce(r.mafia_can_kill, true)
+    into st, nxt, win, ann, can_kill
+  from public.rooms r
+  where r.id = rid;
+
+  if st is distinct from 'vote_reveal' then
+    return;
+  end if;
+
+  if nxt = 'night' and can_kill is not true then
+    nxt := 'dawn';
+  end if;
+
+  update public.rooms
+  set
+    status = coalesce(
+      nxt,
+      case when can_kill is not true then 'dawn' else 'night' end
+    ),
+    winner = win,
+    announcement = coalesce(ann, announcement),
+    next_status = null,
+    next_winner = null,
+    next_announcement = null
+  where id = rid
+    and status = 'vote_reveal';
+end;
+$fn_reveal$;
+
+revoke all on function public.skip_night_phase(uuid) from public;
 revoke all on function public.submit_vote(uuid) from public;
+revoke all on function public.finish_vote_reveal() from public;
+grant execute on function public.skip_night_phase(uuid) to anon, authenticated;
 grant execute on function public.submit_vote(uuid) to anon, authenticated;
+grant execute on function public.finish_vote_reveal() to anon, authenticated;
 
 notify pgrst, 'reload schema';
