@@ -18,10 +18,8 @@ as $fn_rooms$
 begin
   if new.status in ('dawn', 'discuss')
      and (old.status is distinct from new.status) then
-    new.discuss_ends_at :=
-      now() + make_interval(
-        secs => greatest(15, coalesce(new.discuss_seconds, 150))
-      );
+    new.discuss_seconds := 150;
+    new.discuss_ends_at := now() + make_interval(secs => 150);
   end if;
   return new;
 end;

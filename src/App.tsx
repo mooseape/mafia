@@ -264,7 +264,6 @@ export default function App() {
     name: string;
     until: number;
   } | null>(null);
-  const [discussSeconds, setDiscussSeconds] = useState(DEFAULT_DISCUSS_SECONDS);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [mafiaCanKill, setMafiaCanKill] = useState(true);
   const [includeDoctor, setIncludeDoctor] = useState(true);
@@ -377,7 +376,7 @@ export default function App() {
         .eq("id", row.room_id)
         .maybeSingle();
 
-      if (existing && existing.status !== "ended") {
+      if (existing) {
         enterRoom(existing as Room);
       }
     }
@@ -498,12 +497,6 @@ export default function App() {
   }, [room?.id, room?.status, myUserId]);
 
   useEffect(() => {
-    if (room?.discuss_seconds && room.discuss_seconds > 0) {
-      setDiscussSeconds(room.discuss_seconds);
-    }
-  }, [room?.id]);
-
-  useEffect(() => {
     if (!room || !me?.is_host) return;
     if (room.status !== "dawn" && room.status !== "discuss") {
       discussClockKeyRef.current = null;
@@ -512,20 +505,37 @@ export default function App() {
     const key = `${room.id}:${room.status}`;
     if (discussClockKeyRef.current === key) return;
     discussClockKeyRef.current = key;
-    const secs = Math.min(30 * 60, Math.max(15, discussSeconds));
-    const endsAt = new Date(Date.now() + secs * 1000).toISOString();
-    localDiscussEndRef.current = Date.now() + secs * 1000;
+    const endsAt = new Date(Date.now() + DEFAULT_DISCUSS_SECONDS * 1000).toISOString();
+    localDiscussEndRef.current = Date.now() + DEFAULT_DISCUSS_SECONDS * 1000;
     void (async () => {
       await supabase
         .from("rooms")
         .update({
-          discuss_seconds: secs,
+          discuss_seconds: DEFAULT_DISCUSS_SECONDS,
           discuss_ends_at: endsAt,
         })
         .eq("id", room.id);
       await refreshRoom(room.id);
     })();
-  }, [room?.id, room?.status, me?.is_host, discussSeconds]);
+  }, [room?.id, room?.status, me?.is_host]);
+
+  useEffect(() => {
+    if (!room) return;
+    if (room.status !== "lobby" && room.status !== "ended") return;
+    const t = setInterval(() => {
+      refreshRoom(room.id);
+      loadPlayers(room.id);
+    }, 1000);
+    return () => clearInterval(t);
+  }, [room?.id, room?.status]);
+
+  useEffect(() => {
+    if (room?.status !== "lobby") return;
+    setMyRole(null);
+    setPicked(null);
+    setNote(null);
+    setVoteReveal(null);
+  }, [room?.status]);
 
   useEffect(() => {
     if (!room || !me?.is_host) return;
@@ -602,19 +612,11 @@ export default function App() {
     if (room.discuss_ends_at) {
       localDiscussEndRef.current = new Date(room.discuss_ends_at).getTime();
     } else if (localDiscussEndRef.current === null) {
-      localDiscussEndRef.current =
-        Date.now() +
-        (discussSeconds || room.discuss_seconds || DEFAULT_DISCUSS_SECONDS) *
-          1000;
+      localDiscussEndRef.current = Date.now() + DEFAULT_DISCUSS_SECONDS * 1000;
     }
     const tick = setInterval(() => setNowMs(Date.now()), 250);
     return () => clearInterval(tick);
-  }, [
-    room?.status,
-    room?.discuss_ends_at,
-    room?.discuss_seconds,
-    discussSeconds,
-  ]);
+  }, [room?.status, room?.discuss_ends_at]);
 
   useEffect(() => {
     if (!room || (room.status !== "dawn" && room.status !== "discuss")) return;
@@ -730,7 +732,7 @@ export default function App() {
         .eq("code", code)
         .single();
       if (findError || !found) throw new Error("No room with that code");
-      if (found.status !== "lobby")
+      if (found.status !== "lobby" && found.status !== "ended")
         throw new Error("That game already started");
       const { error: playerError } = await supabase.from("players").insert({
         room_id: found.id,
@@ -752,17 +754,12 @@ export default function App() {
     setError("");
     setBusy(true);
     try {
-      const { error: timerError } = await supabase
-        .from("rooms")
-        .update({ discuss_seconds: discussSeconds })
-        .eq("id", room.id);
-      if (timerError && !isMissingRoomsColumn(timerError.message)) {
-        throw new Error(timerError.message);
-      }
       const { error: settingsError } = await supabase
         .from("rooms")
         .update({
-          discuss_seconds: discussSeconds,
+          discuss_seconds: DEFAULT_DISCUSS_SECONDS,
+          winner: null,
+          announcement: null,
           mafia_can_kill: mafiaCanKill,
           include_mafia: true,
           include_doctor: includeDoctor,
@@ -849,15 +846,51 @@ export default function App() {
     }
   }
 
-  async function saveDiscussSeconds(next: number) {
-    const secs = Math.min(30 * 60, Math.max(15, next));
-    setDiscussSeconds(secs);
-    if (!room || !me?.is_host || room.status !== "lobby") return;
-    const { error } = await supabase
-      .from("rooms")
-      .update({ discuss_seconds: secs })
-      .eq("id", room.id);
-    if (error) setError(error.message);
+  async function returnToLobby() {
+    if (!room || !me?.is_host) return;
+    setError("");
+    setBusy(true);
+    try {
+      const { error } = await supabase.rpc("return_to_lobby");
+      if (error) {
+        await supabase.from("votes").delete().eq("room_id", room.id);
+        await supabase.from("night_actions").delete().eq("room_id", room.id);
+        await supabase.from("private_notes").delete().eq("room_id", room.id);
+        await supabase
+          .from("players")
+          .update({ role: null, is_alive: true })
+          .eq("room_id", room.id);
+        const { error: roomError } = await supabase
+          .from("rooms")
+          .update({
+            status: "lobby",
+            discuss_seconds: DEFAULT_DISCUSS_SECONDS,
+            discuss_ends_at: null,
+            next_status: null,
+            next_winner: null,
+            next_announcement: null,
+          })
+          .eq("id", room.id);
+        if (roomError) {
+          throw new Error(
+            error.message.includes("return_to_lobby")
+              ? "Run supabase/return_to_lobby.sql in the Supabase SQL editor (the whole file), then try Play again."
+              : roomError.message,
+          );
+        }
+      }
+      setMyRole(null);
+      setPicked(null);
+      setNote(null);
+      setVoteReveal(null);
+      await refreshRoom(room.id);
+      await loadPlayers(room.id);
+      await loadLiving(room.id);
+    } catch (e) {
+      setError(rpcMessage(e, "Could not return to lobby"));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function goToVote() {
@@ -980,7 +1013,24 @@ export default function App() {
           <h1 className="text-4xl">Game over</h1>
           <p className="text-lg text-zinc-300">{room.announcement}</p>
           <p className="text-zinc-500">Winner: {room.winner ?? "unknown"}</p>
+          <p className="text-zinc-500 text-sm">
+            Everyone stays in this room. Same code, same players.
+          </p>
           {error && <p className="text-red-400 text-sm">{error}</p>}
+          {me?.is_host ? (
+            <button
+              type="button"
+              onClick={() => void returnToLobby()}
+              disabled={busy}
+              className="press-btn press-btn-danger w-full rounded-xl bg-red-700 py-4 text-lg font-semibold"
+            >
+              Play again
+            </button>
+          ) : (
+            <p className="text-zinc-500 text-sm">
+              Waiting for the host to start another game.
+            </p>
+          )}
           <button
             type="button"
             onClick={leaveGame}
@@ -1238,46 +1288,10 @@ export default function App() {
             ))}
           </ul>
           {error && <p className="text-red-400 text-sm">{error}</p>}
-          {me?.is_host && room.status === "lobby" && (
-            <div className="rounded-xl bg-zinc-900 px-4 py-3 space-y-2">
-              <p className="text-sm text-zinc-400">Discussion timer</p>
-              <div className="flex gap-2 items-center">
-                <input
-                  type="number"
-                  min={0}
-                  max={30}
-                  value={Math.floor(discussSeconds / 60)}
-                  onChange={(e) => {
-                    const minutes = Number(e.target.value);
-                    const seconds = discussSeconds % 60;
-                    void saveDiscussSeconds(
-                      (Number.isFinite(minutes) ? minutes : 0) * 60 + seconds,
-                    );
-                  }}
-                  className="w-20 rounded-lg bg-zinc-800 px-3 py-2 outline-none"
-                />
-                <span className="text-zinc-500 text-sm">min</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={59}
-                  value={discussSeconds % 60}
-                  onChange={(e) => {
-                    const minutes = Math.floor(discussSeconds / 60);
-                    const seconds = Number(e.target.value);
-                    void saveDiscussSeconds(
-                      minutes * 60 + (Number.isFinite(seconds) ? seconds : 0),
-                    );
-                  }}
-                  className="w-20 rounded-lg bg-zinc-800 px-3 py-2 outline-none"
-                />
-                <span className="text-zinc-500 text-sm">sec</span>
-              </div>
-              <p className="text-zinc-500 text-xs">
-                After each night, town talks for {formatClock(discussSeconds)}{" "}
-                then votes.
-              </p>
-            </div>
+          {room.winner && room.status === "lobby" && (
+            <p className="text-center text-zinc-400 text-sm">
+              Last game: {room.winner} won
+            </p>
           )}
           {me?.is_host && room.status === "lobby" && (
             <div className="rounded-xl bg-zinc-900 px-4 py-3 space-y-3">
@@ -1314,14 +1328,14 @@ export default function App() {
                   className="h-4 w-4 accent-red-600"
                 />
               </label>
+              <p className="text-zinc-500 text-xs pt-1">
+                After night, town talks for 2:30. You can skip to the vote.
+              </p>
             </div>
           )}
           {!me?.is_host && room.status === "lobby" && (
             <div className="text-center text-zinc-500 text-sm space-y-1">
-              <p>
-                Discussion after night:{" "}
-                {formatClock(room.discuss_seconds ?? discussSeconds)}
-              </p>
+              <p>Discussion after night: 2:30</p>
               <p>
                 Roles:{" "}
                 {[
